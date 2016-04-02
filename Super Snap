@@ -1,0 +1,418 @@
+Snapchat - GibSec Full Disclosure
+
+TOC
+Foreword and notes
+Authentication tokens
+Creating request tokens
+Creating static tokens
+Common fields
+Encrypting/decrypting data
+Encrypting normal snaps
+Encrypting stories
+Index of constants
+Gzipping data
+Registering an account (/bq/register, /ph/registeru)
+Actually registering (/bq/register)
+Attaching a username (/ph/registeru)
+Logging in (/bq/login)
+Logging out (/ph/logout)
+Fetching snap data (/ph/blob)
+Uploading and sending snaps (/ph/upload, /ph/send)
+Uploading your media (/ph/upload)
+Sending it off (/ph/send)
+Resending a failed snap (/ph/retry)
+Posting to a story (/bq/post_story)
+Deleting story segments (/bq/delete_story)
+Appending segments to a story directly (/bq/retry_post_story)
+Posting to a story and sending a snap (/bq/double_post)
+Finding your friends (/ph/find_friends)
+Making - or losing - friends (/ph/friend)
+Getting your friends' best friends (/bq/bests)
+Getting your friends stories (/bq/stories)
+Getting updates (/bq/updates)
+Sending updates (/bq/update_snaps)
+Sending more updates (/bq/update_stories)
+Clearing your feed (/ph/clear)
+Updating your account settings (/ph/settings)
+Updating your attached email
+Updating your account privacy
+Updating your story privacy
+Updating your maturity settings
+Updating feature settings (/bq/update_feature_settings)
+Choosing your number of best friends (/bq/set_num_best_friends)
+Obligatory exploit POCs
+The find_friends exploit
+Bulk registration of accounts
+Foreword and notes
+Given that it's been around four months since our last Snapchat release, we figured we'd do a refresher on the latest version, and see which of the released exploits had been fixed (full disclosure: none of them). Seeing that nothing had been really been improved upon (although, stories are using AES/CBC rather than AES/ECB, which is a start), we decided that it was in everyone's best interests for us to post a full disclosure of everything we've found in our past months of hacking the gibson.
+
+In the time since our previous release, there have been numerous public Snapchat api clients created on GitHub. Thankfully, Snapchat are too busy declining ridiculously high offers from Facebook and Google, and lying to investors (hint: they have no way to tell the genders of their users, see /bq/register for a lack of gender specification) to send unlawful code takedown requests to all the developers involved.
+
+As always, we're contactable via @gibsonsec and security@gibsonsec.org. Merry Gibsmas!
+
+Technical mumbo-jumbo
+This documentation is based on the current build (4.1.01 at the time of writing 23-12-2013) of Snapchat for Android. The Android app uses a mixture of /ph and /bq endpoints - the iOS app is pure /bq, but we haven't documented them all, sorry!
+
+You can use api.snapchat.com, feelinsonice.appspot.com or feelinsonice-hrd.appspot.com as hosts for the API endpoints - they're all the same address at the end of the day.
+
+The documentation may be broken, incomplete, outdated or just plain wrong. We try our best to keep things valid as much as possible, but we're only human after all.
+
+NB! As of the current time of writing, there are two unknown reply fields scattered around the API responses. These are marked with an N/A - explanations welcome to security@gibsonsec.org. Fields with an asterisk after them (e.g: zipped*) means it's an optional field.
+
+Authentication tokens
+Authentication with Snapchat's API is done via a token sent in each request under the name req_token.
+
+In general, it is a combination of two hashes (each salted with the secret), as defined by a specific pattern. You'll be using your normal auth_token for most requests - a few require a static token, which we'll get to in a bit.
+
+Here is some example Python that implements the secret req_token hash:
+
+def request_token(auth_token, timestamp):
+    secret = "iEk21fuwZApXlz93750dmW22pw389dPwOk"
+    pattern = "0001110111101110001111010101111011010001001110011000110001000110"
+    first = hashlib.sha256(secret + auth_token).hexdigest()
+    second = hashlib.sha256(str(timestamp) + secret).hexdigest()
+    bits = [first[i] if c == "0" else second[i] for i, c in enumerate(pattern)]
+    return "".join(bits)
+
+
+# Here's a benchmark to make sure your implementation works:
+#  >>> request_token("m198sOkJEn37DjqZ32lpRu76xmw288xSQ9", 1373209025)
+#  '9301c956749167186ee713e4f3a3d90446e84d8d19a4ca8ea9b4b314d1c51b7b'
+Things to note:
+The secret is iEk21fuwZApXlz93750dmW22pw389dPwOk
+You need two sha256 hashes.
+secret + auth_token
+timestamp + secret
+The pattern is 0001110111101110001111010101111011010001001110011000110001000110
+0 means take a character from hash 1 at the point.
+1 means take a character from hash 2 at the point.
+Creating request tokens
+To create a request token (which you will need for 90% of requests), you need to:
+
+Take the auth_token you got from logging in
+Take the current timestamp (epoch/unix timestamp) which you'll need for the req_token and inclusion in the request.
+Run request_token(auth_token, timestamp)
+Include it in your request!
+Creating static tokens
+If you're logging in, you won't have an auth_token yet. Not to fear!
+
+Take the static token, m198sOkJEn37DjqZ32lpRu76xmw288xSQ9
+Take the current timestamp
+Run request_token(static_token, timestamp)
+Include it in your request!
+Common fields
+There are a few fields that are common to most requests and responses:
+
+Requests:
+
+Field name	Type	Explanation
+username	str	The username of the logged in account.
+req_token	str	See: Creating request tokens
+timestamp	int	The unix timestamp of the request - can be arbitrary.
+Responses:
+
+Field name	Type	Explanation
+logged	bool	This is usually indicative of whether or not your response was successful.
+Encrypting/decrypting data
+Encrypting normal snaps
+All standard media (read: picture and video) data sent to Snapchat is:
+Padded using PKCS#5.
+Encrypted using AES/ECB with a single synchronous key: M02cnQ51Ji97vwT4
+Encrypting stories
+Stories are:
+Padded using PKCS#7.
+Encrypted using AES/CBC with a unique IV and key per piece of the story (i.e, there isn't a single key/IV you can use).
+You can find a media_key and media_iv deep within the return values of a request to /bq/stories.
+The server does the AES/CBC encryption - segments are sent to the server using the normal AES/ECB (M02c..) encryption.
+StoryEncryptionAlgorithm#encrypt just calls SnapEncryptionAlgorithm#encrypt.
+Here's a rough idea of how to decrypt them:
+
+# To find `media_key` and `media_iv`, see: /bq/stories documentation
+import requests
+import base64
+import mcrypt
+
+res = requests.post(...)  # POST /bq/stories and ensure res is a dict.
+data = requests.get(...)  # GET /bq/story_blob?story_id=XXXXX from result
+key = base64.b64decode(res[...]["media_key"])
+iv = base64.b64decode(res[...]["media_iv"])
+
+m = mcrypt.MCRYPT("rijndael-128", "cbc")
+m.init(key, iv)
+dedata = m.decrypt(data)  # Boom.
+Index of constants
+These are just some constants you'll undoubtedly come across working with Snapchat.
+
+- static_token
+`m198sOkJEn37DjqZ32lpRu76xmw288xSQ9`
+Used to create a req_token to log in to an account.
+
+- ENCRYPT_KEY_2
+`M02cnQ51Ji97vwT4`
+Used to encrypt/decrypt standard snap data (using AES/ECB)
+
+- req_token pattern
+`0001110111101110001111010101111011010001001110011000110001000110`
+Used to create a valid req_token. `0` means $hash1, `1` means $hash2.
+Where: $hash1 = sha256(secret + auth_token) and
+       $hash2 = sha256(timestamp + secret)
+
+- req_token secret
+`iEk21fuwZApXlz93750dmW22pw389dPwOk`
+Used to salt the hashes used in generating req_tokens.
+
+- various media types:
+IMAGE = 0
+VIDEO = 1
+VIDEO_NOAUDIO = 2
+FRIEND_REQUEST = 3
+FRIEND_REQUEST_IMAGE = 4
+FRIEND_REQUEST_VIDEO = 5
+FRIEND_REQUEST_VIDEO_NOAUDIO = 6
+
+- various media states:
+NONE = -1
+SENT = 0
+DELIVERED = 1
+VIEWED = 2
+SCREENSHOT = 3
+
+- Snapchat's User-agent:
+`Snapchat/<snapchat-build> (<phone-model>; Android <build-version>; gzip)`
+e.g.: `Snapchat/4.1.01 (Nexus 4; Android 18; gzip)`
+
+This isn't constant per se, but you should send it in your requests anyway.
+Get the Android build version from here: http://developer.android.com/reference/android/os/Build.VERSION_CODES.html (18 is Jelly Bean 4.3, for example)
+NB! Snapchat will fake the `<snapchat-build>` as `3.0.2` if it can't figure out its own build. So you can use that if you'd like.
+Gzipping data
+NB! We're sort of hazy on the details and specifics of when you can and can't send gzipped data. Some endpoints appear to support it, others don't. We tried various combinations of encryption, gzipping and other combinations thereof, but got inconsistent results. Your mileage may vary.
+
+Specific fields (mainly snap upload related, as expected) are sent gzipped (if it's supported). This means, where you see a data field, you can sometimes (it's inconsistent) gzip the data, send it as data and set zipped: 1 (note: it's still encrypted prior to gzipping).
+
+How you gzip data will vary in your language, but in Python, it's as easy as:
+
+from StringIO import StringIO
+import gzip
+
+zipped = StringIO()
+gz = gzip.GzipFile(fileobj=zipped, mode="w")
+gz.write(encrypted_snap_data)
+gz.close()
+
+# Send this as `data`, with `zipped: 1`:
+gzdata = zipped.getvalue()
+Registering an account (/bq/register, /ph/registeru)
+Actually registering (/bq/register)
+{
+    timestamp: 1373207221,
+    req_token: create_token(static_token, 1373207221),
+    email: "you@example.com",
+    password: "password",
+    age: 19,
+    birthday: "1994-11-15"
+}
+Field name	Type	Explanation
+timestamp	int	See: Common fields
+req_token	str	See: Creating static tokens
+email	str	Your email.
+password	str	Your password.
+age	int	How old you are (as an integer).
+birthday	str	Your date-of-birth in the format YYYY-MM-DD.
+If your request is successful, you'll see something like this:
+
+{
+    token: "10634960-5c09-4037-8921-4c447a8c6aa9",
+    email: "you@example.com",
+    snapchat_phone_number: "+15557350485",
+    logged: true
+}
+Field name	Type	Explanation
+token	str	An authentication token you can use without having to log in again.
+email	str	Your email.
+snapchat_phone_number	str	A number you can send a text to, to verify your phone number (OPTIONAL)
+logged	bool	See: Common fields
+NB! Even though your request failed (as indicated by logged), you'll still get a 200 OK reply.
+If your request failed, you'll see something like this:
+
+{
+    message: "you@example.com is already taken! Login with that email address or try another one",
+    logged: false
+}
+Attaching a username (/ph/registeru)
+{
+    timestamp: 1373207221,
+    req_token: create_token(static_token, 1373207221),
+    email: "you@example.com",
+    username: "youraccount"
+}
+Field name	Type	Explanation
+timestamp	int	See: Common fields
+req_token	str	See: Creating static tokens
+email	str	The email attached to your account.
+username	str	The username you're requesting.
+If your request succeeded, you'll see something similar to logging in (/bq/login).
+If your request failed, you'll see something like:
+
+{
+    message: "Invalid username. Letters and numbers with an optional hyphen, underscore, or period in between please!",
+    logged: false
+}
+Logging in (/bq/login)
+{
+    username: "youraccount",
+    timestamp: 1373207221,
+    req_token: create_token(static_token, 1373207221),
+    password: "yourpassword"
+}
+Field name	Type	Explanation
+username	str	See: Common fields
+timestamp	int	See: Common fields
+req_token	str	See: See: Creating static tokens
+password	str	Your account's password.
+If your reply was successful, you'll get back something like this:
+
+{
+    bests: ["someguy"],
+    score: 0,
+    number_of_best_friends: 1,
+    received: 0,
+    logged: true,
+    added_friends: [
+        {ts: 1384417608610, name: "somedude", display: "", type: 0},
+        {ts: 1385130955168, name: "random", display: "", type: 1}
+    ],
+    beta_expiration: 0,
+    beta_number: -1,
+    requests: [{display: "", type: 1, ts: 1377613760506, name: "randomstranger"}],
+    sent: 0,
+    story_privacy: "FRIENDS",
+    username: "youraccount",
+    snaps: [
+        {id: "894720385130955367r", sn: "someguy", ts: 1385130955367, sts: 1385130955367, m: 3, st: 1},
+        {id: "116748384417608719r", sn: "randomdude", ts: 1384417608719, sts: 1384417608719, m: 3, st: 1},
+        {id: "325924384416555224r", sn: "teamsnapchat", t: 10, ts: 1384416555224, sts: 1384416555224, m: 0, st: 1}
+    ],
+    friends: [
+        {can_see_custom_stories: true, name: "teamsnapchat", display": Team Snapchat", type: 0},
+        {can_see_custom_stories: true, name: "someguy", display: "Some Guy", type: 0},
+        {can_see_custom_stories: true, name: "youraccount", display: "", type: 1}
+    ],
+    device_token: "",
+    feature_settings: {},
+    snap_p: 1,
+    mobile_verification_key: "MTMzNzpnaWJzb24=",
+    recents: ["teamsnapchat"],
+    added_friends_timestamp: 1385130955168,
+    notification_sound_setting: "OFF",
+    snapchat_phone_number: "+15557350485",
+    auth_token: "85c32786-0c71-44bf-9ba0-77bf18c61db2",
+    image_caption: false,
+    is_beta: false,
+    current_timestamp: 1385378822645,
+    can_view_mature_content: false,
+    email: "you@example.com",
+    should_send_text_to_verify_number: true,
+    mobile: ""
+}
+Field name	Type	Explanation
+bests	list	A list of your "best friends" (most frequently interacted with).
+score	int	Your arbitrary, and utterly pointless Snapchat score.
+number_of_best_friends	int	The number of "best friends" you have.
+received	int	The amount of snaps you've received.
+logged	bool	See: Common fields
+added_friends	list	Friends who have added you - See below.
+beta_expiration*	int	When this beta build (if you're in the beta) expires.
+beta_number*	int	The number of this beta build.
+requests	list	Friends who have added you - See below.
+sent	int	How many snaps you've sent.
+story_privacy	str	Your story privacy.
+username	str	Your username.
+snaps	list	A list of snap-related things - See below.
+friends	list	A list of all your friends - See below.
+device_token	str	Used for Google Cloud Messaging PUSH notifications.
+feature_settings	dict	N/A
+snap_p	int	Your account privacy.
+mobile_verification_key	str	A base64'd verification key (+ your username) you can text Snapchat to verify your phone number.
+recents	list	A list of people you have recently interacted with.
+added_friends_timestamp	int	A unix timestamp (*1000) of when a friend last added you.
+notification_sound_setting	str	The app's sound notification settings.
+snapchat_phone_number	str	A phone number you can text your mobile_verification_key to.
+auth_token	str	An authentication token. Store this, you'll need it later!
+image_caption	bool	N/A
+is_beta*	bool	Whether you're opted into Snapchat Beta or not.
+current_timestamp	int	A current unix timestamp (*1000).
+can_view_mature_content	bool	Your maturity settings.
+email	str	Your email.
+should_send_text_to_verify_number	bool	Exactly what it says on the tin.
+mobile	str	Your attached mobile number (if any).
+added_friends is a list of:
+
+Field name	Type	Explanation
+ts	int	A unix timestamp (*1000) of when they added you.
+name	str	Their username.
+display	str	Their display name, set by you.
+type	int	Whether the account is: public, 0; private, 1.
+requests is a list of:
+
+Field name	Type	Explanation
+ts	int	A unix timestamp (*1000) of when they added you.
+name	str	Their username.
+display	str	Their display name, set by you.
+type	int	Whether the account is: public, 0; private, 1.
+snaps is a list of:
+
+Field name	Type	Explanation
+id	str	A unique id for the snap. Ends in either: r, sent to us; or s, sent from us.
+sn / rp	str	Snap sender/recipient name, respectively.
+ts	int	A unix timestamp (*1000) of when it was last interacted with.
+sts	int	A unix timestamp (*1000) of when it was sent (almost always the same as ts).
+m	int	The media type - See: Index of constants.
+st	int	The state of the media - See: Index of constants.
+t	int	Present in unopened snaps (where m=N,st=1) - the time the snap should be viewable for.
+friends is a list of:
+
+Field name	Type	Explanation
+can_see_custom_stories	bool	Whether the user is allowed to see your stories (on custom privacy).
+name	str	Their user account name.
+display	str	Their display name, set by you.
+type	int	Whether the account is: public, 0; private, 1.
+Logging out (/ph/logout)
+{
+    username: "youraccount",
+    timestamp: 1373207221,
+    req_token: create_token(auth_token, 1373207221),
+    json: "{}",
+    events: "[]"
+}
+Field name	Type	Explanation
+req_token	str	See: Creating request tokens
+timestamp	int	See: Common fields
+username	str	See: Common fields
+json	dict	See: Sending updates (/bq/update_snaps)
+events	list	See: Sending updates (/bq/update_snaps)
+If your request was successful, you'll get back a 200 OK with no body content.
+Doing this makes your authentication token stale - you can't reuse it.
+
+Fetching snap data (/ph/blob) ¶
+
+{
+    username: "youraccount",
+    timestamp: 1373207221,
+    req_token: create_token(auth_token, 1373207221),
+    id: "97117373178635038r"
+}
+Field name	Type	Explanation
+username	str	See: Common fields
+timestamp	int	See: Common fields
+req_token	str	See: Creating request tokens
+id	int	The id attached to the snap we're interested in.
+If your request is successful, you will get 200 OK followed by the blob data for the snap you requested:
+
+The returned blob is encrypted. See: Encrypting/decrypting data
+Once decrypted, images will start with \xFF\xD8\xFF\xE0 - almost always JPEG.
+Once decrypted, videos will start with \x00\x00\x00\x18 - almost always MPEG-4.
+PNG (\x89PNG) and GIF (GIF8) are uncommon but can be sent by custom clients, as they appear to display correctly.
+Your request may be met with 410 Gone if you requested an image that:
+
+Doesn't exist
+Did exist but has been marked seen or screenshotted.
